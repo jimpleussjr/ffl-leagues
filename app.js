@@ -103,12 +103,38 @@ async function loadLeague(cfg) {
     weeks.push(week);
   }
 
+  // Roster activity: players added / dropped over weeks 1..WEEKS.
+  const seenTx = {};
+  for (let w = 1; w <= WEEKS; w++) {
+    const tx = await getJson(
+      leagueUrl(cfg.id, `view=mTransactions2&scoringPeriodId=${w}`)
+    );
+    (tx.transactions || []).forEach((t) => {
+      seenTx[t.id] = t; // dedupe across weeks by transaction id
+    });
+  }
+  const activity = {};
+  Object.keys(teams).forEach((id) => {
+    activity[id] = { adds: 0, drops: 0 };
+  });
+  Object.keys(seenTx).forEach((id) => {
+    const t = seenTx[id];
+    (t.items || []).forEach((it) => {
+      if (it.type === "ADD" && it.toTeamId && activity[it.toTeamId]) {
+        activity[it.toTeamId].adds += 1;
+      } else if (it.type === "DROP" && it.fromTeamId && activity[it.fromTeamId]) {
+        activity[it.fromTeamId].drops += 1;
+      }
+    });
+  });
+
   return {
     id: cfg.id,
     name: (meta.settings && meta.settings.name) || cfg.fallbackName,
     teams,
     startSlots,
     weeks,
+    activity,
   };
 }
 
@@ -327,7 +353,22 @@ function analyze(league) {
     })
     .sort((a, b) => b.luck - a.luck);
 
-  return { n, standings, high, low, trophies, plungers, managers, luck };
+  // Roster activity: total adds + drops per team, most active first.
+  const activity = ids
+    .map((id) => {
+      const act = (league.activity && league.activity[id]) || { adds: 0, drops: 0 };
+      return {
+        id,
+        name: league.teams[id].name,
+        owner: league.teams[id].owners.join(" & "),
+        adds: act.adds,
+        drops: act.drops,
+        total: act.adds + act.drops,
+      };
+    })
+    .sort((a, b) => b.total - a.total || b.adds - a.adds);
+
+  return { n, standings, high, low, trophies, plungers, managers, luck, activity };
 }
 
 /* ----------------------------- rendering -------------------------- */
@@ -452,14 +493,21 @@ function leaguePanel(league, a) {
       </div>
     </div>
 
-    <div class="panel" style="margin-top:18px">
-      <h3>Luck &mdash; actual record vs. all-play record</h3>
-      <p class="hint">
-        Expected wins come from how each team's weekly score would fare against every other
-        team that week (the "all-play" record), scaled to a ${a.standings[0].games}-game schedule.
-        Bars above expectation are lucky; below are unlucky.
-      </p>
-      <div class="chart-box"><canvas id="luck-${league.id}"></canvas></div>
+    <div class="two-col" style="margin-top:18px">
+      <div class="panel">
+        <h3>Luck &mdash; record vs. all-play record</h3>
+        <p class="hint">
+          Expected wins come from how each team's weekly score would fare against every other
+          team that week (the "all-play" record), scaled to a ${a.standings[0].games}-game schedule.
+          Bars above expectation are lucky; below are unlucky.
+        </p>
+        <div class="chart-box"><canvas id="luck-${league.id}"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Most active &mdash; roster moves</h3>
+        <p class="hint">Players added and dropped (free agency &amp; waivers) over Weeks 1&ndash;${WEEKS}. Most active at top.</p>
+        <div class="chart-box"><canvas id="act-${league.id}"></canvas></div>
+      </div>
     </div>
   `;
 }
@@ -567,11 +615,12 @@ function drawCharts(league, a) {
       ],
     },
     options: {
+      indexAxis: "y",
       responsive: true,
       maintainAspectRatio: false,
       scales: {
-        x: { grid: { display: false } },
-        y: { beginAtZero: true, grid: { color: CHART.grid }, title: { display: true, text: "Wins" } },
+        x: { beginAtZero: true, grid: { color: CHART.grid }, ticks: { stepSize: 1 }, title: { display: true, text: "Wins" } },
+        y: { grid: { display: false } },
       },
       plugins: {
         legend: { position: "bottom" },
@@ -582,6 +631,54 @@ function drawCharts(league, a) {
               const sign = l.luck >= 0 ? "+" : "";
               return `Luck: ${sign}${fmt(l.luck)} wins  |  All-play: ${fmt(l.allPlayPct * 100, 0)}%`;
             },
+          },
+        },
+      },
+    },
+  });
+
+  // Roster activity: stacked horizontal bars (most active at top).
+  const act = [...a.activity].sort((x, y) => x.total - y.total || x.adds - y.adds);
+  new Chart(document.getElementById(`act-${league.id}`), {
+    type: "bar",
+    data: {
+      labels: act.map((x) => x.name),
+      datasets: [
+        {
+          label: "Players added",
+          data: act.map((x) => x.adds),
+          backgroundColor: CHART.green,
+          borderRadius: 5,
+          stack: "moves",
+        },
+        {
+          label: "Players dropped",
+          data: act.map((x) => x.drops),
+          backgroundColor: CHART.red,
+          borderRadius: 5,
+          stack: "moves",
+        },
+      ],
+    },
+    options: {
+      indexAxis: "y",
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          stacked: true,
+          beginAtZero: true,
+          grid: { color: CHART.grid },
+          ticks: { stepSize: 1 },
+          title: { display: true, text: "Roster moves" },
+        },
+        y: { stacked: true, grid: { display: false } },
+      },
+      plugins: {
+        legend: { position: "bottom" },
+        tooltip: {
+          callbacks: {
+            afterBody: (items) => `Total moves: ${act[items[0].dataIndex].total}`,
           },
         },
       },
