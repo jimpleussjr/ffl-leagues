@@ -465,7 +465,7 @@ function leaguePanel(league, a) {
 }
 
 function drawCharts(league, a) {
-  const labels = a.standings.map((t) => t.abbrev || t.name);
+  const labels = a.standings.map((t) => t.name);
   Chart.defaults.color = CHART.color;
   Chart.defaults.font.family = '"Segoe UI", system-ui, sans-serif';
 
@@ -493,7 +493,10 @@ function drawCharts(league, a) {
       responsive: true,
       maintainAspectRatio: false,
       scales: {
-        x: { grid: { display: false } },
+        x: {
+          grid: { display: false },
+          ticks: { maxRotation: 90, minRotation: 90, autoSkip: false },
+        },
         y: { beginAtZero: true, ticks: { stepSize: 1 }, grid: { color: CHART.grid } },
       },
       plugins: { legend: { position: "bottom" } },
