@@ -345,8 +345,11 @@ function analyze(league) {
         id,
         name: t.name,
         owner: t.owners.join(" & "),
+        games,
         actualWins,
         expectedWins,
+        actualWinPct: games ? actualWins / games : 0,
+        expectedWinPct: allPlayPct,
         allPlayPct,
         luck: actualWins - expectedWins,
       };
@@ -495,11 +498,10 @@ function leaguePanel(league, a) {
 
     <div class="two-col" style="margin-top:18px">
       <div class="panel">
-        <h3>Luck &mdash; record vs. all-play record</h3>
+        <h3>Luck &mdash; actual win % vs. all-play win %</h3>
         <p class="hint">
-          Expected wins come from how each team's weekly score would fare against every other
-          team that week (the "all-play" record), scaled to a ${a.standings[0].games}-game schedule.
-          Bars above expectation are lucky; below are unlucky.
+          The all-play win % is what each team's record would be if it faced every other team every
+          week. Teams whose actual win % beats that were lucky; below it, unlucky.
         </p>
         <div class="chart-box"><canvas id="luck-${league.id}"></canvas></div>
       </div>
@@ -594,21 +596,21 @@ function drawCharts(league, a) {
   });
 
   // Luck: actual vs expected wins.
-  const luckSorted = [...a.luck].sort((x, y) => x.actualWins - y.actualWins);
+  const luckSorted = [...a.luck].sort((x, y) => x.actualWinPct - y.actualWinPct);
   new Chart(document.getElementById(`luck-${league.id}`), {
     type: "bar",
     data: {
       labels: luckSorted.map((l) => l.name),
       datasets: [
         {
-          label: "Actual wins",
-          data: luckSorted.map((l) => l.actualWins),
+          label: "Actual win %",
+          data: luckSorted.map((l) => l.actualWinPct * 100),
           backgroundColor: CHART.accent,
           borderRadius: 5,
         },
         {
-          label: "Expected wins (all-play)",
-          data: luckSorted.map((l) => l.expectedWins),
+          label: "Expected win % (all-play)",
+          data: luckSorted.map((l) => l.expectedWinPct * 100),
           backgroundColor: "rgba(255,255,255,.28)",
           borderRadius: 5,
         },
@@ -619,17 +621,24 @@ function drawCharts(league, a) {
       responsive: true,
       maintainAspectRatio: false,
       scales: {
-        x: { beginAtZero: true, grid: { color: CHART.grid }, ticks: { stepSize: 1 }, title: { display: true, text: "Wins" } },
+        x: {
+          beginAtZero: true,
+          max: 100,
+          grid: { color: CHART.grid },
+          ticks: { callback: (v) => v + "%" },
+          title: { display: true, text: "Win %" },
+        },
         y: { grid: { display: false } },
       },
       plugins: {
         legend: { position: "bottom" },
         tooltip: {
           callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: ${fmt(ctx.parsed.x, 1)}%`,
             afterBody: (items) => {
               const l = luckSorted[items[0].dataIndex];
               const sign = l.luck >= 0 ? "+" : "";
-              return `Luck: ${sign}${fmt(l.luck)} wins  |  All-play: ${fmt(l.allPlayPct * 100, 0)}%`;
+              return `Luck: ${sign}${fmt(l.luck)} wins`;
             },
           },
         },
