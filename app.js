@@ -6,7 +6,6 @@
  * ------------------------------------------------------------------ */
 
 const SEASON = 2026;
-const WEEKS = 5; // analyze the first five weeks of the season
 const BASE = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${SEASON}`;
 const NEG = 1e9; // sentinel cost for "player is not eligible for this slot"
 
@@ -29,7 +28,7 @@ function leagueUrl(id, params) {
 
 async function loadLeague(cfg) {
   const meta = await getJson(
-    leagueUrl(cfg.id, "view=mTeam&view=mSettings&view=mStandings")
+    leagueUrl(cfg.id, "view=mTeam&view=mSettings&view=mStandings&view=mMatchupScore")
   );
 
   const members = {};
@@ -63,9 +62,28 @@ async function loadLeague(cfg) {
     for (let i = 0; i < n; i++) startSlots.push(slot);
   });
 
+  // Determine how many weeks are complete. A period counts as complete once
+  // every matchup in it has a decided winner (HOME/AWAY/TIE) rather than
+  // UNDECIDED. This rolls forward automatically as the season progresses.
+  const periodWinners = {};
+  (meta.schedule || []).forEach((m) => {
+    if (!m.home || m.matchupPeriodId == null) return;
+    const p = m.matchupPeriodId;
+    if (!periodWinners[p]) periodWinners[p] = [];
+    periodWinners[p].push(m.winner);
+  });
+  let weeksPlayed = 0;
+  for (let p = 1; periodWinners[p]; p++) {
+    const decided = periodWinners[p].every(
+      (w) => w === "HOME" || w === "AWAY" || w === "TIE"
+    );
+    if (!decided) break;
+    weeksPlayed = p;
+  }
+
   // Per-week box scores (player points, actual & optimal lineup totals).
   const weeks = [];
-  for (let w = 1; w <= WEEKS; w++) {
+  for (let w = 1; w <= weeksPlayed; w++) {
     const box = await getJson(
       leagueUrl(cfg.id, `view=mBoxscore&scoringPeriodId=${w}`)
     );
@@ -103,9 +121,9 @@ async function loadLeague(cfg) {
     weeks.push(week);
   }
 
-  // Roster activity: players added / dropped over weeks 1..WEEKS.
+  // Roster activity: players added / dropped over the completed weeks.
   const seenTx = {};
-  for (let w = 1; w <= WEEKS; w++) {
+  for (let w = 1; w <= weeksPlayed; w++) {
     const tx = await getJson(
       leagueUrl(cfg.id, `view=mTransactions2&scoringPeriodId=${w}`)
     );
@@ -134,6 +152,7 @@ async function loadLeague(cfg) {
     teams,
     startSlots,
     weeks,
+    weeksPlayed,
     activity,
   };
 }
@@ -238,11 +257,12 @@ function optimalLineup(players, startSlots) {
 function analyze(league) {
   const ids = Object.keys(league.teams).map(Number);
   const n = ids.length;
+  const weeks = league.weeks.length;
 
   const perTeam = {};
   ids.forEach((id) => (perTeam[id] = { scores: [], actual: 0, optimal: 0 }));
 
-  for (let w = 0; w < WEEKS; w++) {
+  for (let w = 0; w < weeks; w++) {
     ids.forEach((id) => {
       const e = league.weeks[w][id];
       perTeam[id].scores.push(e ? e.actual : null);
@@ -269,7 +289,7 @@ function analyze(league) {
   // Highest / lowest single-week team score.
   let high = null;
   let low = null;
-  for (let w = 0; w < WEEKS; w++) {
+  for (let w = 0; w < weeks; w++) {
     ids.forEach((id) => {
       const s = perTeam[id].scores[w];
       if (s == null) return;
@@ -285,7 +305,7 @@ function analyze(league) {
     trophies[id] = 0;
     plungers[id] = 0;
   });
-  for (let w = 0; w < WEEKS; w++) {
+  for (let w = 0; w < weeks; w++) {
     let hi = -Infinity;
     let lo = Infinity;
     let hiIds = [];
@@ -321,12 +341,12 @@ function analyze(league) {
     .sort((a, b) => a.regret - b.regret); // best (least regret) first
 
   // Luck: actual record vs. all-play record (facing every team every week).
-  const allPlayGames = WEEKS * (n - 1);
+  const allPlayGames = weeks * (n - 1);
   const luck = ids
     .map((id) => {
       const t = league.teams[id];
       let expWins = 0;
-      for (let w = 0; w < WEEKS; w++) {
+      for (let w = 0; w < weeks; w++) {
         const mine = perTeam[id].scores[w];
         if (mine == null) continue;
         ids.forEach((o) => {
@@ -371,7 +391,7 @@ function analyze(league) {
     })
     .sort((a, b) => b.total - a.total || b.adds - a.adds);
 
-  return { n, standings, high, low, trophies, plungers, managers, luck, activity };
+  return { n, weeks, standings, high, low, trophies, plungers, managers, luck, activity };
 }
 
 /* ----------------------------- rendering -------------------------- */
@@ -438,10 +458,13 @@ function leaguePanel(league, a) {
   const luckiest = a.luck[0];
   const unluckiest = a.luck[a.luck.length - 1];
 
+  const wkRange =
+    a.weeks <= 1 ? `Week ${a.weeks}` : `Weeks 1\u2013${a.weeks}`;
+
   return `
     <div class="league-head">
       <h2>${esc(league.name)}</h2>
-      <span class="meta">${a.n} teams &middot; Weeks 1\u2013${WEEKS} of ${SEASON}</span>
+      <span class="meta">${a.n} teams &middot; ${wkRange} of ${SEASON}</span>
     </div>
 
     <div class="grid cards">
@@ -479,7 +502,7 @@ function leaguePanel(league, a) {
 
     <div class="panel" style="margin-top:18px">
       <h3>Standings</h3>
-      <p class="hint">Through Week ${WEEKS}. Sorted by win%, then points for.</p>
+      <p class="hint">Through ${wkRange}. Sorted by win%, then points for.</p>
       ${standingsTable(league, a)}
     </div>
 
@@ -491,7 +514,7 @@ function leaguePanel(league, a) {
       </div>
       <div class="panel">
         <h3>Manager quality &mdash; points left on the bench</h3>
-        <p class="hint">Total gap between each team's optimal lineup and what they actually started (Weeks 1&ndash;${WEEKS}). Lower is better.</p>
+        <p class="hint">Total gap between each team's optimal lineup and what they actually started (${wkRange}). Lower is better.</p>
         <div class="chart-box tall"><canvas id="mgr-${league.id}"></canvas></div>
       </div>
     </div>
@@ -507,7 +530,7 @@ function leaguePanel(league, a) {
       </div>
       <div class="panel">
         <h3>Most active &mdash; roster moves</h3>
-        <p class="hint">Players added and dropped (free agency &amp; waivers) over Weeks 1&ndash;${WEEKS}. Most active at top.</p>
+        <p class="hint">Players added and dropped (free agency &amp; waivers) over ${wkRange}. Most active at top.</p>
         <div class="chart-box"><canvas id="act-${league.id}"></canvas></div>
       </div>
     </div>
@@ -737,6 +760,11 @@ async function main() {
 
     loaded.forEach((entry) => drawCharts(entry.league, entry.analysis));
     showOnly(loaded[0].id, loaded);
+
+    const maxWeeks = Math.max(...loaded.map((e) => e.analysis.weeks));
+    const wkLabel = maxWeeks <= 1 ? `Week ${maxWeeks}` : `Weeks 1\u2013${maxWeeks}`;
+    const sub = document.getElementById("subtitle");
+    if (sub) sub.textContent = `Season summary through ${wkLabel}`;
   } catch (err) {
     console.error(err);
     contentEl.innerHTML = `<p class="error">Could not load ESPN data: ${esc(err.message)}. Check your connection and refresh.</p>`;
